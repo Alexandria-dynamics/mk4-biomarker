@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: "Vávra"
+    given-names: "Tomáš"
+    alias: "Architekt"
+    affiliation: "Alexandria Dynamics"
+title: "MK4: Frequency-Domain Biomarkers for Disease Detection"
+version: 1.0.0
+date-released: 2026-02-02
+url: "https://github.com/Alexandria-dynamics/mk4-biomarker"
+repository-code: "https://github.com/Alexandria-dynamics/mk4-biomarker"
+license: MIT
+keywords:
+  - biomarkers
+  - disease-detection
+  - RNA-seq
+  - frequency-analysis
+  - bioinformatics
+  - transcriptional-chaos
+  - risk-stratification
+abstract: >
+  MK4 is a frequency-domain biomarker framework for analyzing
+  RNA expression data. It uses Fast Fourier Transform (FFT) and
+  Shannon entropy to identify transcriptional chaos signatures
+  associated with disease. Version 1.0 presents preliminary
+  results for cancer, multiple sclerosis, and type 2 diabetes,
+  with a validated negative control in Parkinson's disease.
+  Key discoveries include the critical importance of dataset
+  balance and the distinction between RNA-level and protein-level
+  diseases. Improving specificity and reducing false detections
+  is the primary goal for upcoming versions.

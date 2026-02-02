@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="mk4-biomarker",
-    version="0.1.0",
+    version="1.0.0",
     author="Architekt",
     author_email="architekt@alexandria-dynamics.org",
     description="Frequency-domain biomarkers for disease detection",
