@@ -163,7 +163,8 @@ mk4-biomarker/
 ├── results/                    # Generated figures & tables
 ├── docs/                       # Documentation
 │   ├── roadmap.md              # Development roadmap
-│   └── datasets.md             # Dataset details
+│   ├── datasets.md             # Dataset details
+│   └── positioning.md          # MK4 vs image-based AI
 ├── data/                       # Data directory
 ├── tests/                      # Test suite
 ├── CITATIONS.md                # All data sources & references
