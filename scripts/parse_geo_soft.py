@@ -1,345 +1,333 @@
 #!/usr/bin/env python3
 """
-GEO SOFT Parser for MK4 Biomarker Pipeline
-============================================
-Parses GEO SOFT format files, extracts expression matrices
-and auto-detects control/disease labels.
+MK4 Biomarker - GEO SOFT Parser
+Alexandria Dynamics
 
-Usage:
-    python scripts/parse_geo_soft.py
-
-Input:  *.soft.gz files (GEO format)
-Output: data/parsed/{GSE_ID}_expression.csv
-        data/parsed/{GSE_ID}_labels.csv
+Parses GEO SOFT files (.gz or uncompressed) and computes chaos metrics.
+Results saved to timestamped directories - never overwrites old results.
 """
 
 import gzip
-import numpy as np
-import pandas as pd
+import json
+import os
 from pathlib import Path
+from datetime import datetime
+import numpy as np
+from scipy.stats import entropy, ttest_ind
 
+# ═══════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════
 
-# --- Configuration --------------------------------------------------------
+# Paths relative to project root
+PROJECT_ROOT = Path(__file__).parent.parent
+INPUT_DIR = PROJECT_ROOT / "data" / "input"
+RESULTS_DIR = PROJECT_ROOT / "results"
 
-INPUT_DIR = Path('.')  # Where SOFT files are -- adjust path!
+# Create directories if they don't exist
+INPUT_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-OUTPUT_DIR = Path('data/parsed')
+# ═══════════════════════════════════════════════════════════════
+# PARSER
+# ═══════════════════════════════════════════════════════════════
 
-SOFT_FILES = [
-    'GSE49036_family.soft.gz',   # Parkinson's (negative control)
-    'GSE25724_family.soft.gz',   # T2D balanced (best result)
-    'GSE76894_family.soft.gz',   # T2D imbalanced
-    'GSE38642_family.soft.gz',   # T2D imbalanced
-    'GSE70353_family.soft.gz',   # Unknown -- parser will tell us
-]
-
-# --- Label Detection Keywords ---------------------------------------------
-
-DISEASE_KEYWORDS = [
-    # Diabetes
-    't2d', 'type 2 diabetes', 'type2diabetes',
-    'diabetes mellitus type 2', 'diabetes mellitus, type 2',
-    'diabetic',
-    # MS
-    'multiple sclerosis', 'relapsing', 'progressive ms',
-    # Parkinson
-    "parkinson", "parkinsons", "parkinson's",
-    # Cancer
-    'cancer', 'tumor', 'tumour', 'carcinoma',
-    'melanoma', 'sarcoma', 'leukemia', 'lymphoma',
-    # Generic
-    'affected', 'case', 'patient',
-]
-
-CONTROL_KEYWORDS = [
-    'control', 'healthy', 'normal', 'unaffected',
-    'wild-type', 'wildtype',
-    'non-diabetic', 'non diabetic', 'nondiabetic',
-    'no disease',
-]
-
-
-# --- Parser ---------------------------------------------------------------
-
-def parse_soft(filepath):
+def parse_soft_file(filepath):
     """
-    Parse GEO SOFT file. Extract metadata + expression per sample.
+    Parse GEO SOFT file (supports .gz compression).
 
-    Returns
-    -------
-    series_id : str
-    samples_meta : dict  {gsm: {title, characteristics, ...}}
-    samples_expr : dict  {gsm: {gene_id: value}}
+    Returns:
+        dict: {
+            'dataset_name': str,
+            'samples': {
+                'GSM123': {'label': 'CONTROL', 'expression': {...}},
+                ...
+            }
+        }
     """
     filepath = Path(filepath)
-    print(f"\n{'=' * 60}")
-    print(f"  Parsing: {filepath.name}")
-    print(f"  Size:    {filepath.stat().st_size / 1e6:.1f} MB")
-    print(f"{'=' * 60}")
+    dataset_name = filepath.stem.replace('_family.soft', '').replace('.soft', '').replace('.gz', '')
 
-    opener = gzip.open if str(filepath).endswith('.gz') else open
+    print(f"\n{'='*70}")
+    print(f"Parsing: {filepath.name}")
+    print(f"{'='*70}")
 
-    series_id = None
-    samples_meta = {}
-    samples_expr = {}
-    current_gsm = None
+    samples = {}
+    current_sample = None
     in_table = False
-    skip_section = False
+    current_data = {}
 
-    with opener(filepath, 'rt', encoding='utf-8') as f:
+    # Open with gzip if .gz, otherwise normal open
+    if filepath.suffix == '.gz':
+        f = gzip.open(filepath, 'rt')
+    else:
+        f = open(filepath, 'r')
+
+    try:
         for line in f:
-            line = line.rstrip('\n')
+            line = line.strip()
 
-            # New section markers
-            if line.startswith('^SERIES'):
-                series_id = line.split(' = ', 1)[1].strip()
-                skip_section = False
-                continue
-
+            # New sample
             if line.startswith('^SAMPLE'):
-                current_gsm = line.split(' = ', 1)[1].strip()
-                samples_meta[current_gsm] = {}
-                samples_expr[current_gsm] = {}
+                current_sample = line.split('=')[1].strip()
+                samples[current_sample] = {'label': None, 'expression': {}}
+
+            # Get disease label
+            elif current_sample and 'disease state:' in line.lower():
+                if 'non-diabetic' in line.lower() or 'control' in line.lower() or 'normal' in line.lower():
+                    samples[current_sample]['label'] = 'CONTROL'
+                elif 'diabetic' in line.lower() or 'diabetes' in line.lower() or 'disease' in line.lower():
+                    samples[current_sample]['label'] = 'DISEASE'
+
+            # Table data
+            elif line == '!sample_table_begin':
+                in_table = True
+                current_data = {}
+
+            elif line == '!sample_table_end':
                 in_table = False
-                skip_section = False
-                continue
+                if current_sample and current_data:
+                    samples[current_sample]['expression'] = current_data
 
-            if line.startswith('^PLATFORM') or line.startswith('^ENTITY'):
-                skip_section = True
-                current_gsm = None
-                in_table = False
-                continue
-
-            if skip_section:
-                continue
-
-            # Sample metadata
-            if line.startswith('!Sample_') and current_gsm:
-                if 'table_begin' in line:
-                    in_table = True
-                    continue
-                if 'table_end' in line:
-                    in_table = False
-                    continue
-
-                if ' = ' in line:
-                    key, val = line.split(' = ', 1)
-                    key = key.replace('!Sample_', '').strip()
-                    val = val.strip('"')
-
-                    if key in ('title', 'geo_accession', 'description',
-                               'source_organism', 'status',
-                               'organism_ch1', 'tissue'):
-                        samples_meta[current_gsm][key] = val
-
-                    if key.startswith('characteristics_ch'):
-                        samples_meta[current_gsm].setdefault(
-                            'characteristics', []
-                        ).append(val)
-                continue
-
-            # Expression table data
-            if in_table and current_gsm:
-                if line.startswith('ID_REF'):
-                    continue
+            elif in_table and '\t' in line and not line.startswith('ID_REF'):
                 parts = line.split('\t')
                 if len(parts) >= 2:
-                    gene_id = parts[0].strip()
                     try:
-                        value = float(parts[1].strip())
-                        samples_expr[current_gsm][gene_id] = value
+                        current_data[parts[0]] = float(parts[1])
                     except ValueError:
                         pass
 
-    n_with_expr = sum(1 for g in samples_expr.values() if len(g) > 0)
-    print(f"  Series:       {series_id}")
-    print(f"  Samples:      {len(samples_meta)}")
-    print(f"  With expr:    {n_with_expr}")
-    if n_with_expr > 0:
-        first_gsm = next(g for g in samples_expr if len(samples_expr[g]) > 0)
-        print(f"  Genes/sample: {len(samples_expr[first_gsm])}")
+    finally:
+        f.close()
 
-    return series_id, samples_meta, samples_expr
+    # Filter valid samples
+    valid_samples = {
+        k: v for k, v in samples.items()
+        if v['label'] is not None and len(v['expression']) > 0
+    }
 
+    print(f"Found {len(valid_samples)} valid samples")
+    print(f"   Controls: {sum(1 for v in valid_samples.values() if v['label']=='CONTROL')}")
+    print(f"   Disease:  {sum(1 for v in valid_samples.values() if v['label']=='DISEASE')}")
 
-# --- Label Detection ------------------------------------------------------
+    return {
+        'dataset_name': dataset_name,
+        'samples': valid_samples
+    }
 
-def detect_labels(samples_meta):
+# ═══════════════════════════════════════════════════════════════
+# CHAOS ANALYSIS
+# ═══════════════════════════════════════════════════════════════
+
+def compute_chaos_metrics(dataset):
     """
-    Auto-detect control(0) / disease(1) from characteristics.
-
-    Returns {gsm: 0 | 1 | -1}
-    -1 = could not determine
+    Compute Shannon entropy (chaos metric) for each sample.
     """
-    labels = {}
+    samples = dataset['samples']
 
-    for gsm, meta in samples_meta.items():
-        chars = meta.get('characteristics', [])
-        title = meta.get('title', '')
-        desc = meta.get('description', '')
+    # Get common genes
+    all_genes = [set(s['expression'].keys()) for s in samples.values()]
+    common_genes = sorted(set.intersection(*all_genes))
 
-        text = ' '.join(chars + [title, desc]).lower()
+    print(f"\nCommon genes: {len(common_genes)}")
 
-        hit_disease = any(kw in text for kw in DISEASE_KEYWORDS)
-        hit_control = any(kw in text for kw in CONTROL_KEYWORDS)
+    control_entropy = []
+    disease_entropy = []
+    sample_details = {}
 
-        if hit_control and not hit_disease:
-            labels[gsm] = 0
-        elif hit_disease and not hit_control:
-            labels[gsm] = 1
-        else:
-            labels[gsm] = -1
+    for gsm, data in samples.items():
+        label = data['label']
 
-    return labels
+        # Get expression values
+        values = np.array([data['expression'][g] for g in common_genes])
+        values_norm = values / values.sum()
 
+        # Shannon entropy
+        ent = entropy(values_norm, base=2)
 
-# --- Build & Save ---------------------------------------------------------
+        sample_details[gsm] = {
+            'label': label,
+            'entropy': float(ent),
+            'num_genes': len(common_genes)
+        }
 
-def build_and_save(series_id, samples_meta, samples_expr, labels):
-    """
-    Build expression DataFrame, save CSV files.
-    """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        if label == 'CONTROL':
+            control_entropy.append(ent)
+        elif label == 'DISEASE':
+            disease_entropy.append(ent)
 
-    valid = [gsm for gsm in samples_expr if len(samples_expr[gsm]) > 0]
+    # Statistics
+    if len(control_entropy) > 0 and len(disease_entropy) > 0:
+        t_stat, p_value = ttest_ind(control_entropy, disease_entropy)
 
-    if not valid:
-        print(f"  No expression data -- skipping {series_id}")
-        return None
-
-    gene_sets = [set(samples_expr[g].keys()) for g in valid]
-    common = sorted(set.intersection(*gene_sets))
-    union = sorted(set.union(*gene_sets))
-
-    if len(common) >= 100:
-        genes = common
-        print(f"  Using COMMON genes: {len(common)}")
+        stats = {
+            'control_mean': float(np.mean(control_entropy)),
+            'control_std': float(np.std(control_entropy)),
+            'disease_mean': float(np.mean(disease_entropy)),
+            'disease_std': float(np.std(disease_entropy)),
+            'difference': float(np.mean(disease_entropy) - np.mean(control_entropy)),
+            'percent_change': float((np.mean(disease_entropy) - np.mean(control_entropy)) / np.mean(control_entropy) * 100),
+            't_statistic': float(t_stat),
+            'p_value': float(p_value),
+            'significant': bool(p_value < 0.05)
+        }
     else:
-        genes = union
-        print(f"  Using UNION genes:  {len(union)} (common only {len(common)})")
+        stats = {'error': 'Insufficient samples'}
 
-    # Expression matrix
-    matrix = np.full((len(valid), len(genes)), np.nan)
-    for i, gsm in enumerate(valid):
-        for j, gene in enumerate(genes):
-            matrix[i, j] = samples_expr[gsm].get(gene, np.nan)
+    return {
+        'control_entropy': [float(x) for x in control_entropy],
+        'disease_entropy': [float(x) for x in disease_entropy],
+        'statistics': stats,
+        'sample_details': sample_details
+    }
 
-    expr_df = pd.DataFrame(matrix, index=valid, columns=genes)
+# ═══════════════════════════════════════════════════════════════
+# OUTPUT
+# ═══════════════════════════════════════════════════════════════
 
-    # Labels
-    label_rows = []
-    for gsm in valid:
-        meta = samples_meta.get(gsm, {})
-        label_rows.append({
-            'sample_id': gsm,
-            'label': labels.get(gsm, -1),
-            'title': meta.get('title', ''),
-            'characteristics': '; '.join(meta.get('characteristics', []))
-        })
-    labels_df = pd.DataFrame(label_rows)
+def create_output_directory(dataset_name):
+    """Create timestamped output directory."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = RESULTS_DIR / f"{timestamp}_{dataset_name}"
 
-    # Save
-    expr_path = OUTPUT_DIR / f"{series_id}_expression.csv"
-    labels_path = OUTPUT_DIR / f"{series_id}_labels.csv"
+    (output_dir / "json").mkdir(parents=True, exist_ok=True)
+    (output_dir / "plots").mkdir(parents=True, exist_ok=True)
 
-    expr_df.to_csv(expr_path)
-    labels_df.to_csv(labels_path, index=False)
+    print(f"\nOutput: {output_dir.relative_to(PROJECT_ROOT)}")
+    return output_dir
 
-    print(f"\n  {expr_path}")
-    print(f"       {expr_df.shape[0]} samples x {expr_df.shape[1]} genes")
-    print(f"  {labels_path}")
+def save_results(output_dir, dataset, chaos_results):
+    """Save JSON results."""
 
-    # Label summary
-    print(f"\n  {'─' * 56}")
-    print(f"  {'Sample':<12} {'Label':<10} Title / Characteristics")
-    print(f"  {'─' * 56}")
+    # Chaos results
+    with open(output_dir / "json" / "chaos_results.json", 'w') as f:
+        json.dump(chaos_results, f, indent=2)
 
-    for _, row in labels_df.iterrows():
-        lbl = row['label']
-        lbl_str = 'CONTROL' if lbl == 0 else 'DISEASE' if lbl == 1 else '???'
-        info = row['title'] if row['title'] else row['characteristics']
-        print(f"  {row['sample_id']:<12} [{lbl_str:>7}]  {info[:55]}")
+    # Metadata
+    metadata = {
+        'dataset_name': dataset['dataset_name'],
+        'timestamp': datetime.now().isoformat(),
+        'num_samples': len(dataset['samples']),
+        'num_controls': sum(1 for s in dataset['samples'].values() if s['label'] == 'CONTROL'),
+        'num_disease': sum(1 for s in dataset['samples'].values() if s['label'] == 'DISEASE'),
+        'analysis_type': 'Shannon_entropy_chaos_metric'
+    }
 
-    print(f"  {'─' * 56}")
+    with open(output_dir / "json" / "metadata.json", 'w') as f:
+        json.dump(metadata, f, indent=2)
 
-    n0 = (labels_df['label'] == 0).sum()
-    n1 = (labels_df['label'] == 1).sum()
-    nu = (labels_df['label'] == -1).sum()
+    # Sample info
+    sample_info = {
+        gsm: {
+            'label': data['label'],
+            'num_genes': len(data['expression'])
+        }
+        for gsm, data in dataset['samples'].items()
+    }
 
-    print(f"  Control:  {n0}")
-    print(f"  Disease:  {n1}")
-    if nu > 0:
-        print(f"  UNKNOWN: {nu} samples -- REVIEW MANUALLY!")
+    with open(output_dir / "json" / "sample_info.json", 'w') as f:
+        json.dump(sample_info, f, indent=2)
 
-    balance = n1 / (n0 + n1) if (n0 + n1) > 0 else 0
-    print(f"  Balance:  {balance * 100:.1f}% disease")
+    print(f"Saved JSON files")
 
-    if 0.3 <= balance <= 0.7:
-        print(f"  Well balanced")
-    else:
-        print(f"  Imbalanced -- MK4 sensitivity may be affected")
+def generate_plots(output_dir, chaos_results):
+    """Generate plots."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
 
-    return expr_df, labels_df
+        control = chaos_results['control_entropy']
+        disease = chaos_results['disease_entropy']
+        stats = chaos_results['statistics']
 
+        if 'error' in stats:
+            print("Skipping plots - insufficient data")
+            return
 
-# --- Main -----------------------------------------------------------------
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        bp = ax.boxplot([control, disease],
+                        tick_labels=['Control', 'Disease'],
+                        patch_artist=True)
+
+        for patch, color in zip(bp['boxes'], ['#2ecc71', '#e74c3c']):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+
+        ax.set_ylabel('Shannon Entropy', fontsize=12)
+        ax.set_title('Transcriptional Chaos: Control vs Disease', fontsize=14)
+        ax.grid(axis='y', alpha=0.3)
+
+        sig = "***" if stats['p_value'] < 0.001 else "**" if stats['p_value'] < 0.01 else "*" if stats['p_value'] < 0.05 else "ns"
+        ax.text(0.5, 0.95, f"p = {stats['p_value']:.4f} {sig}",
+                transform=ax.transAxes, ha='center')
+
+        plt.tight_layout()
+        plt.savefig(output_dir / "plots" / "chaos_distribution.png", dpi=300)
+        plt.close()
+
+        print(f"Saved plots")
+
+    except ImportError:
+        print("matplotlib not installed - skipping plots")
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════
 
 def main():
-    print("\n" + "=" * 60)
-    print("   GEO SOFT PARSER -- MK4 Biomarker Pipeline")
-    print("   Alexandria Dynamics")
-    print("=" * 60)
+    """Main pipeline."""
 
-    all_results = {}
+    print("\n" + "="*70)
+    print("  MK4 BIOMARKER - RNA Chaos Analysis")
+    print("  Alexandria Dynamics")
+    print("="*70)
 
-    for fname in SOFT_FILES:
-        fpath = INPUT_DIR / fname
+    # Find SOFT files
+    soft_files = list(INPUT_DIR.glob("*.gz")) + list(INPUT_DIR.glob("*.soft"))
 
-        if not fpath.exists():
-            print(f"\n  NOT FOUND: {fpath} -- skipping")
-            continue
-
-        series_id, meta, expr = parse_soft(fpath)
-        labels = detect_labels(meta)
-        result = build_and_save(series_id, meta, expr, labels)
-
-        if result:
-            all_results[series_id] = result
-
-    # Grand summary
-    print("\n\n" + "=" * 60)
-    print("   PARSING COMPLETE -- GRAND SUMMARY")
-    print("=" * 60)
-
-    if not all_results:
-        print("  No datasets parsed. Check INPUT_DIR and file paths.")
-        print(f"  Current INPUT_DIR: {INPUT_DIR.resolve()}")
-        print("=" * 60)
+    if not soft_files:
+        print(f"\nNo files in: {INPUT_DIR.relative_to(PROJECT_ROOT)}")
+        print(f"\nPlace .soft.gz files in: data/input/")
         return
 
-    print(f"  {'Dataset':<12} {'Samples':<10} {'Genes':<8} "
-          f"{'Ctrl':<6} {'Dis':<6} {'Unk':<5} Balance")
-    print(f"  {'─' * 60}")
+    print(f"\nFound {len(soft_files)} file(s):")
+    for f in soft_files:
+        print(f"   - {f.name}")
 
-    for sid, (edf, ldf) in sorted(all_results.items()):
-        n0 = (ldf['label'] == 0).sum()
-        n1 = (ldf['label'] == 1).sum()
-        nu = (ldf['label'] == -1).sum()
-        bal = n1 / (n0 + n1) * 100 if (n0 + n1) > 0 else 0
-        unk_flag = " !" if nu > 0 else ""
-        print(f"  {sid:<12} {len(ldf):<10} {edf.shape[1]:<8} "
-              f"{n0:<6} {n1:<6} {nu:<5} {bal:.1f}%{unk_flag}")
+    # Process each file
+    for filepath in soft_files:
+        try:
+            dataset = parse_soft_file(filepath)
 
-    print(f"\n  Output directory: {OUTPUT_DIR}/")
-    print(f"  Files: *_expression.csv, *_labels.csv")
-    print("=" * 60)
+            if len(dataset['samples']) == 0:
+                print(f"No valid samples found")
+                continue
 
-    print("\n  NEXT: Load into MK4:")
-    print("    import pandas as pd")
-    print("    expr = pd.read_csv('data/parsed/GSE25724_expression.csv', index_col=0)")
-    print("    labels = pd.read_csv('data/parsed/GSE25724_labels.csv')")
-    print("=" * 60)
+            chaos_results = compute_chaos_metrics(dataset)
+            output_dir = create_output_directory(dataset['dataset_name'])
+            save_results(output_dir, dataset, chaos_results)
+            generate_plots(output_dir, chaos_results)
 
+            # Summary
+            if 'error' not in chaos_results['statistics']:
+                stats = chaos_results['statistics']
+                print(f"\nSUMMARY")
+                print(f"{'='*70}")
+                print(f"  Control: {stats['control_mean']:.6f} +/- {stats['control_std']:.6f}")
+                print(f"  Disease: {stats['disease_mean']:.6f} +/- {stats['disease_std']:.6f}")
+                print(f"  Diff:    {stats['difference']:+.6f} ({stats['percent_change']:+.2f}%)")
+                print(f"  p-value: {stats['p_value']:.6f}")
+                print(f"  Signif:  {'YES' if stats['significant'] else 'NO'}")
+                print(f"{'='*70}")
 
-if __name__ == '__main__':
+        except Exception as e:
+            print(f"\nError: {e}")
+            continue
+
+    print(f"\nComplete! Results in: {RESULTS_DIR.relative_to(PROJECT_ROOT)}/")
+    print(f"{'='*70}\n")
+
+if __name__ == "__main__":
     main()
