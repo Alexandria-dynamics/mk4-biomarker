@@ -276,3 +276,97 @@ if __name__ == "__main__":
         sys.exit(1)
 
     run(sys.argv[1])
+# ==============================================================
+# GUI COMPAT LAYER
+# ==============================================================
+
+import json
+import matplotlib.pyplot as plt
+
+def parse_file(filepath):
+    """
+    Unified entrypoint expected by gui.py
+    Returns dataset dict
+    """
+    ftype = detect_file_type(filepath)
+    if ftype == "soft":
+        return parse_soft_file(filepath)
+    if ftype == "matrix":
+        return parse_matrix_file(filepath)
+    return None
+
+
+def compute_chaos_metrics(dataset):
+    entropies = {"CONTROL": [], "DISEASE": []}
+
+    for s in dataset["samples"].values():
+        e = compute_sample_entropy(s["expression"])
+        if not np.isnan(e):
+            entropies[s["label"]].append(float(e))
+
+    stats = {}
+    c = entropies["CONTROL"]
+    d = entropies["DISEASE"]
+
+    if len(c) >= 2 and len(d) >= 2:
+        t, p = ttest_ind(c, d, equal_var=False)
+        stats = {
+            "control_mean": float(np.mean(c)),
+            "control_std": float(np.std(c, ddof=1)),
+            "disease_mean": float(np.mean(d)),
+            "disease_std": float(np.std(d, ddof=1)),
+            "p_value": float(p),
+            "n_control": len(c),
+            "n_disease": len(d),
+        }
+    else:
+        stats = {"error": "insufficient samples"}
+
+    return {"entropies": entropies, "statistics": stats}
+
+
+def create_output_directory(dataset_name):
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    out = RESULTS_DIR / f"run_{ts}_{dataset_name}"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "figures").mkdir(exist_ok=True)
+    return out
+
+
+def save_results(output_dir, dataset, chaos_results):
+    (output_dir / "chaos_results.json").write_text(
+        json.dumps(chaos_results, indent=2), encoding="utf-8"
+    )
+    write_index_html(output_dir)
+
+
+def generate_plot(output_dir, chaos_results):
+    c = chaos_results["entropies"]["CONTROL"]
+    d = chaos_results["entropies"]["DISEASE"]
+
+    plt.figure()
+    plt.boxplot([c, d], labels=["CONTROL", "DISEASE"])
+    plt.title("Chaos entropy")
+    plt.ylabel("Entropy")
+    plt.savefig(output_dir / "figures" / "chaos_boxplot.png", dpi=150)
+    plt.close()
+
+    write_index_html(output_dir)
+
+
+def write_index_html(output_dir):
+    figs = sorted((output_dir / "figures").glob("*.png"))
+    imgs = "\n".join(
+        f'<img src="figures/{f.name}" style="max-width:100%;margin:10px;">'
+        for f in figs
+    )
+
+    html = f"""<!doctype html>
+<html>
+<body>
+<h2>MK4 Analysis Output</h2>
+{imgs}
+</body>
+</html>
+"""
+    (output_dir / "index.html").write_text(html, encoding="utf-8")
