@@ -796,6 +796,15 @@ def generate_output(output_dir, dataset, results):
     sig_class = "sig-yes" if results.get("significant") else "sig-no"
     sig_text = "Significant ✓" if results.get("significant") else "Not Significant"
 
+    # Pre-compute formatted values for HTML
+    p_val = results.get('p_value')
+    p_value_str = f"{p_val:.4f}" if isinstance(p_val, float) else "N/A"
+    ctrl_mean = results.get('control_mean', 0)
+    ctrl_std = results.get('control_std', 0)
+    dis_mean = results.get('disease_mean', 0)
+    dis_std = results.get('disease_std', 0)
+    pct_change = results.get('percent_change', 0)
+
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -834,18 +843,18 @@ def generate_output(output_dir, dataset, results):
                 <div class="stat-value">{results.get('n_control', 0)}</div>
                 <div class="stat-label">Control Samples</div>
                 <div style="margin-top: 10px; font-size: 0.9em;">
-                    {results.get('control_mean', 0):.6f} ± {results.get('control_std', 0):.6f}
+                    {ctrl_mean:.6f} ± {ctrl_std:.6f}
                 </div>
             </div>
             <div class="stat-card disease">
                 <div class="stat-value">{results.get('n_disease', 0)}</div>
                 <div class="stat-label">Disease Samples</div>
                 <div style="margin-top: 10px; font-size: 0.9em;">
-                    {results.get('disease_mean', 0):.6f} ± {results.get('disease_std', 0):.6f}
+                    {dis_mean:.6f} ± {dis_std:.6f}
                 </div>
             </div>
             <div class="stat-card result">
-                <div class="stat-value">{results.get('p_value', 'N/A'):.4f if isinstance(results.get('p_value'), float) else 'N/A'}</div>
+                <div class="stat-value">{p_value_str}</div>
                 <div class="stat-label">p-value</div>
                 <div style="margin-top: 10px;">
                     <span class="{sig_class}">{sig_text}</span>
@@ -855,7 +864,7 @@ def generate_output(output_dir, dataset, results):
                 <div class="stat-value">{results.get('direction', 'N/A')}</div>
                 <div class="stat-label">Direction</div>
                 <div style="margin-top: 10px; font-size: 0.9em;">
-                    {results.get('percent_change', 0):+.2f}% change
+                    {pct_change:+.2f}% change
                 </div>
             </div>
         </div>
