@@ -282,16 +282,18 @@ class MK4BatchApp:
             raise ValueError(f"No labeled samples found in {filepath.name}")
 
         # Move output to our batch directory structure
-        auto_output = Path(result.get("output_dir", ""))
-        if auto_output.exists():
-            # Move contents to our batch subdirectory
-            dataset_name = dataset.get("dataset_name", filepath.stem)
-            dataset_dir = self.run_dir / dataset_name
+        output_dir_str = result.get("output_dir", "")
+        if output_dir_str and output_dir_str != ".":
+            auto_output = Path(output_dir_str)
+            if auto_output.exists() and auto_output.is_dir() and auto_output != Path("."):
+                # Move contents to our batch subdirectory
+                dataset_name = dataset.get("dataset_name", filepath.stem)
+                dataset_dir = self.run_dir / dataset_name
 
-            if dataset_dir.exists():
-                shutil.rmtree(dataset_dir)
+                if dataset_dir.exists():
+                    shutil.rmtree(dataset_dir)
 
-            shutil.move(str(auto_output), str(dataset_dir))
+                shutil.move(str(auto_output), str(dataset_dir))
 
     def _log_error(self, filename, message):
         """Append error to log file."""
