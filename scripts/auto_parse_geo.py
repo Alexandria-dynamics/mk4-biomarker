@@ -255,6 +255,10 @@ def parse_soft_file(filepath):
 
     print(f"  Parsing SOFT: {filepath.name}")
 
+    # Get file size for progress
+    file_size = filepath.stat().st_size
+    print(f"  File size: {file_size / 1024 / 1024:.1f} MB")
+
     has_tables = has_expression_tables(filepath)
     print(f"  Expression tables embedded: {'Yes' if has_tables else 'No'}")
 
@@ -267,8 +271,22 @@ def parse_soft_file(filepath):
     # Track which fields contain labels
     label_field_stats = defaultdict(lambda: {"control": 0, "disease": 0, "unknown": 0})
 
+    # Progress tracking
+    lines_read = 0
+    bytes_read = 0
+    last_progress = 0
+
     with open_file(filepath) as f:
         for line in f:
+            lines_read += 1
+            bytes_read += len(line)
+
+            # Progress every 10%
+            progress = int((bytes_read / file_size) * 100) // 10 * 10
+            if progress > last_progress:
+                last_progress = progress
+                print(f"    Progress: {progress}% ({lines_read:,} lines)")
+
             line = line.rstrip("\n\r")
 
             # New sample block
@@ -419,7 +437,11 @@ def parse_matrix_file(filepath, soft_metadata=None):
     filepath = Path(filepath)
     dataset_name = extract_dataset_name(filepath)
 
+    # Get file size for progress
+    file_size = filepath.stat().st_size
     print(f"  Parsing MATRIX: {filepath.name}")
+    print(f"  File size: {file_size / 1024 / 1024:.1f} MB")
+    print(f"  Reading metadata...")
 
     # First pass: extract metadata from header
     sample_metadata = {}  # col_index -> metadata dict
@@ -468,6 +490,8 @@ def parse_matrix_file(filepath, soft_metadata=None):
     # Read expression data
     import pandas as pd
 
+    print(f"  Loading expression matrix (this may take a while for large files)...")
+
     with open_file(filepath) as f:
         # Skip to data section
         for _ in range(data_start_line):
@@ -477,6 +501,8 @@ def parse_matrix_file(filepath, soft_metadata=None):
 
     # Remove marker rows
     df = df[~df.index.astype(str).str.startswith("!")]
+
+    print(f"  Loaded: {len(df)} genes x {len(df.columns)} samples")
 
     # Build samples dict
     samples = {}
