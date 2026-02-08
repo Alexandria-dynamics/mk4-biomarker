@@ -21,16 +21,13 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import Tk, Label, Button, filedialog, StringVar, Frame, Listbox, Scrollbar, END, VERTICAL, BOTH, LEFT, RIGHT, Y
 
-# Import from parse_geo_soft
-from parse_geo_soft import (
+# Import from auto_parse_geo (universal parser)
+from auto_parse_geo import (
     INPUT_DIR,
     RESULTS_DIR,
-    parse_file,
-    compute_chaos_metrics,
-    save_results,
-    generate_plot,
-    generate_html_report,
     PROJECT_ROOT,
+    auto_analyze,
+    detect_file_format,
 )
 
 
@@ -263,7 +260,7 @@ class MK4BatchApp:
         self.btn_open.config(state="normal")
 
     def _process_single_file(self, filepath):
-        """Process a single file."""
+        """Process a single file using universal auto-parser."""
         # Copy file to input dir if not already there
         if filepath.parent != INPUT_DIR:
             dest = INPUT_DIR / filepath.name
@@ -272,21 +269,29 @@ class MK4BatchApp:
         else:
             work_file = filepath
 
-        # Parse file
-        dataset = parse_file(work_file)
+        # Use auto-analyze (handles all formats automatically)
+        result = auto_analyze(work_file)
 
-        # Compute chaos metrics
-        chaos_results = compute_chaos_metrics(dataset)
+        if "error" in result and "dataset" not in result:
+            raise ValueError(result["error"])
 
-        # Create subdirectory for this dataset
-        dataset_dir = self.run_dir / dataset["dataset_name"]
-        dataset_dir.mkdir(parents=True, exist_ok=True)
-        (dataset_dir / "figures").mkdir(exist_ok=True)
+        dataset = result.get("dataset", {})
+        analysis = result.get("results", {})
 
-        # Save results
-        save_results(dataset_dir, dataset, chaos_results)
-        generate_plot(dataset_dir, chaos_results, dataset["dataset_name"])
-        generate_html_report(dataset_dir, dataset, chaos_results)
+        if "error" in analysis and analysis.get("n_control", 0) == 0:
+            raise ValueError(f"No labeled samples found in {filepath.name}")
+
+        # Move output to our batch directory structure
+        auto_output = Path(result.get("output_dir", ""))
+        if auto_output.exists():
+            # Move contents to our batch subdirectory
+            dataset_name = dataset.get("dataset_name", filepath.stem)
+            dataset_dir = self.run_dir / dataset_name
+
+            if dataset_dir.exists():
+                shutil.rmtree(dataset_dir)
+
+            shutil.move(str(auto_output), str(dataset_dir))
 
     def _log_error(self, filename, message):
         """Append error to log file."""
