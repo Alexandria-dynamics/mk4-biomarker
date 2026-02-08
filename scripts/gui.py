@@ -1,173 +1,326 @@
-import json
-import os
-from datetime import datetime
-import matplotlib.pyplot as plt
-
-def parse_file(filepath):
-    """
-    Unified entrypoint expected by gui.py.
-    Returns dataset dict or None if unknown format.
-    """
-    ftype = detect_file_type(filepath)
-    if ftype == "soft":
-        return parse_soft_file(filepath)
-    if ftype == "matrix":
-        return parse_matrix_file(filepath)
-    return None
-
-
-def compute_chaos_metrics(dataset):
-    """
-    Returns dict expected by gui.py:
-    {
-      "entropies": {"CONTROL":[...], "DISEASE":[...]},
-      "statistics": {...}
-    }
-    """
-    entropies = {"CONTROL": [], "DISEASE": []}
-
-    for sample in dataset["samples"].values():
-        lbl = sample.get("label")
-        if lbl not in ("CONTROL", "DISEASE"):
-            continue
-        e = compute_sample_entropy(sample["expression"])
-        if not np.isnan(e):
-            entropies[lbl].append(float(e))
-
-    stats = {}
-    c = entropies["CONTROL"]
-    d = entropies["DISEASE"]
-
-    if len(c) >= 2 and len(d) >= 2:
-        t, p = ttest_ind(c, d, equal_var=False)
-        stats = {
-            "control_mean": float(np.mean(c)),
-            "control_std": float(np.std(c, ddof=1)),
-            "disease_mean": float(np.mean(d)),
-            "disease_std": float(np.std(d, ddof=1)),
-            "p_value": float(p),
-            "t_stat": float(t),
-            "n_control": int(len(c)),
-            "n_disease": int(len(d)),
-        }
-    else:
-        stats = {
-            "error": "insufficient samples for statistics",
-            "n_control": int(len(c)),
-            "n_disease": int(len(d)),
-        }
-
-    return {"entropies": entropies, "statistics": stats}
-
-
-def create_output_directory(dataset_name):
-    """
-    Creates unique output folder under RESULTS_DIR and returns Path.
-    """
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    out = RESULTS_DIR / f"run_{ts}_{dataset_name}"
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "figures").mkdir(parents=True, exist_ok=True)
-    (out / "logs").mkdir(parents=True, exist_ok=True)
-    return out
-
-
-def save_results(output_dir, dataset, chaos_results):
-    """
-    Saves metadata + minimal JSON. Also creates index.html gallery placeholder.
-    """
-    output_dir = Path(output_dir)
-
-    meta = {
-        "dataset_name": dataset.get("dataset_name"),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "n_samples": len(dataset.get("samples", {})),
-        "n_control": sum(1 for s in dataset["samples"].values() if s.get("label") == "CONTROL"),
-        "n_disease": sum(1 for s in dataset["samples"].values() if s.get("label") == "DISEASE"),
-    }
-
-    (output_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    (output_dir / "chaos_results.json").write_text(json.dumps(chaos_results, indent=2), encoding="utf-8")
-
-    # Create/refresh simple index.html listing figures
-    write_index_html(output_dir)
-
-
-def generate_plot(output_dir, chaos_results):
-    """
-    Generates a simple boxplot + histogram into figures/, then refreshes index.html.
-    """
-    output_dir = Path(output_dir)
-    fig_dir = output_dir / "figures"
-    fig_dir.mkdir(parents=True, exist_ok=True)
-
-    c = chaos_results["entropies"]["CONTROL"]
-    d = chaos_results["entropies"]["DISEASE"]
-
-    # Boxplot
-    plt.figure()
-    plt.boxplot([c, d], labels=["CONTROL", "DISEASE"])
-    plt.title("Chaos (Entropy) by Group")
-    plt.ylabel("Entropy")
-    box_path = fig_dir / "01_chaos_boxplot.png"
-    plt.savefig(box_path, dpi=160, bbox_inches="tight")
-    plt.close()
-
-    # Histogram
-    plt.figure()
-    if len(c) > 0:
-        plt.hist(c, bins=20, alpha=0.6, label="CONTROL")
-    if len(d) > 0:
-        plt.hist(d, bins=20, alpha=0.6, label="DISEASE")
-    plt.title("Chaos (Entropy) Distribution")
-    plt.xlabel("Entropy")
-    plt.ylabel("Count")
-    plt.legend()
-    hist_path = fig_dir / "02_chaos_hist.png"
-    plt.savefig(hist_path, dpi=160, bbox_inches="tight")
-    plt.close()
-
-    write_index_html(output_dir)
-
-
-def write_index_html(output_dir):
-    """
-    Creates single-page HTML gallery of all images in output_dir/figures.
-    """
-    output_dir = Path(output_dir)
-    fig_dir = output_dir / "figures"
-    imgs = []
-    if fig_dir.exists():
-        imgs = sorted([p for p in fig_dir.iterdir() if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")])
-
-    cards = []
-    for p in imgs:
-        rel = f"figures/{p.name}"
-        cards.append(f"""
-        <figure style="border:1px solid #ddd;border-radius:10px;padding:10px;margin:0;background:#fff">
-          <a href="{rel}" target="_blank" rel="noopener">
-            <img src="{rel}" style="width:100%;height:auto;border-radius:8px" loading="lazy">
-          </a>
-          <figcaption style="font-size:12px;color:#555;margin-top:6px;word-break:break-word">{p.name}</figcaption>
-        </figure>
-        """)
-
-    grid = "\n".join(cards) if cards else "<p>No figures yet.</p>"
-
-    html_doc = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>MK4 Output</title>
-</head>
-<body style="font-family:Arial, sans-serif; margin:24px; background:#f5f7fa;">
-  <h1 style="margin:0 0 8px 0;">MK4 Output</h1>
-  <p style="color:#666;margin:0 0 18px 0;">Analytical output (non-diagnostic). Folder: {output_dir.name}</p>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;">
-    {grid}
-  </div>
-</body>
-</html>
+#!/usr/bin/env python3
 """
-    (output_dir / "index.html").write_text(html_doc, encoding="utf-8")
+MK4 Biomarker - GUI
+Alexandria Dynamics
+
+Simple GUI for batch processing of GEO files.
+Features:
+- Select multiple files at once
+- Each dataset gets its own subdirectory
+- Error logging to error.log
+- Completed files moved to complete/ folder
+- Failed files moved to error/ folder
+- Processing continues even if one file fails
+"""
+
+import shutil
+import threading
+import traceback
+import webbrowser
+from datetime import datetime
+from pathlib import Path
+from tkinter import Tk, Label, Button, filedialog, StringVar, Frame, Listbox, Scrollbar, END, VERTICAL, BOTH, LEFT, RIGHT, Y
+
+# Import from parse_geo_soft
+from parse_geo_soft import (
+    INPUT_DIR,
+    RESULTS_DIR,
+    parse_file,
+    compute_chaos_metrics,
+    save_results,
+    generate_plot,
+    generate_html_report,
+    PROJECT_ROOT,
+)
+
+
+class MK4BatchApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("MK4 Biomarker Analysis")
+        self.root.geometry("700x500")
+        self.root.configure(bg="#f5f7fa")
+
+        self.selected_files = []
+        self.run_dir = None
+        self.complete_dir = None
+        self.error_dir = None
+        self.log_file = None
+
+        self.status = StringVar(value="Select files to begin batch processing.")
+
+        # Header
+        header = Frame(root, bg="#667eea", height=50)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        Label(
+            header,
+            text="MK4 Biomarker - Batch Analysis",
+            font=("Arial", 16, "bold"),
+            bg="#667eea",
+            fg="white",
+        ).pack(expand=True)
+
+        # Main content
+        content = Frame(root, bg="#f5f7fa", padx=20, pady=15)
+        content.pack(fill=BOTH, expand=True)
+
+        # Button row
+        btn_frame = Frame(content, bg="#f5f7fa")
+        btn_frame.pack(fill="x", pady=(0, 10))
+
+        self.btn_select = Button(
+            btn_frame,
+            text="Select Files",
+            font=("Arial", 11),
+            bg="#667eea",
+            fg="white",
+            activebackground="#764ba2",
+            activeforeground="white",
+            padx=15,
+            pady=5,
+            relief="flat",
+            cursor="hand2",
+            command=self.select_files,
+        )
+        self.btn_select.pack(side=LEFT, padx=(0, 10))
+
+        self.btn_run = Button(
+            btn_frame,
+            text="Run Analysis",
+            font=("Arial", 11),
+            bg="#2ecc71",
+            fg="white",
+            activebackground="#27ae60",
+            activeforeground="white",
+            padx=15,
+            pady=5,
+            relief="flat",
+            cursor="hand2",
+            command=self.run_analysis,
+            state="disabled",
+        )
+        self.btn_run.pack(side=LEFT, padx=(0, 10))
+
+        self.btn_open = Button(
+            btn_frame,
+            text="Open Results",
+            font=("Arial", 11),
+            bg="#3498db",
+            fg="white",
+            activebackground="#2980b9",
+            activeforeground="white",
+            padx=15,
+            pady=5,
+            relief="flat",
+            cursor="hand2",
+            command=self.open_results,
+            state="disabled",
+        )
+        self.btn_open.pack(side=LEFT)
+
+        # File list with scrollbar
+        list_frame = Frame(content, bg="#f5f7fa")
+        list_frame.pack(fill=BOTH, expand=True, pady=(0, 10))
+
+        scrollbar = Scrollbar(list_frame, orient=VERTICAL)
+        self.file_list = Listbox(
+            list_frame,
+            font=("Consolas", 10),
+            selectmode="extended",
+            yscrollcommand=scrollbar.set,
+            bg="white",
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#ddd",
+        )
+        scrollbar.config(command=self.file_list.yview)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        self.file_list.pack(side=LEFT, fill=BOTH, expand=True)
+
+        # Status label
+        self.lbl_status = Label(
+            content,
+            textvariable=self.status,
+            font=("Arial", 10),
+            bg="#f5f7fa",
+            fg="#555",
+            anchor="w",
+            wraplength=650,
+        )
+        self.lbl_status.pack(fill="x", pady=(5, 0))
+
+        # Progress label
+        self.progress_var = StringVar(value="")
+        self.lbl_progress = Label(
+            content,
+            textvariable=self.progress_var,
+            font=("Arial", 10, "bold"),
+            bg="#f5f7fa",
+            fg="#667eea",
+            anchor="w",
+        )
+        self.lbl_progress.pack(fill="x")
+
+    def select_files(self):
+        """Open file dialog to select multiple files."""
+        filepaths = filedialog.askopenfilenames(
+            title="Select GEO files",
+            filetypes=[
+                ("GEO files", "*.soft.gz *.soft *.txt.gz *.txt"),
+                ("SOFT files", "*.soft.gz *.soft"),
+                ("Matrix files", "*.txt.gz *.txt"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if filepaths:
+            self.selected_files = [Path(f) for f in filepaths]
+            self.file_list.delete(0, END)
+            for f in self.selected_files:
+                self.file_list.insert(END, f.name)
+
+            self.status.set(f"Selected {len(self.selected_files)} file(s). Click 'Run Analysis' to start.")
+            self.btn_run.config(state="normal")
+            self.btn_open.config(state="disabled")
+
+    def run_analysis(self):
+        """Start batch analysis in background thread."""
+        if not self.selected_files:
+            return
+
+        self.btn_select.config(state="disabled")
+        self.btn_run.config(state="disabled")
+        self.status.set("Starting batch analysis...")
+
+        thread = threading.Thread(target=self._process_batch, daemon=True)
+        thread.start()
+
+    def _process_batch(self):
+        """Process all selected files (runs in background thread)."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Create main run directory
+        self.run_dir = RESULTS_DIR / f"batch_{timestamp}"
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create complete and error directories in INPUT_DIR
+        self.complete_dir = INPUT_DIR / "complete"
+        self.error_dir = INPUT_DIR / "error"
+        self.complete_dir.mkdir(exist_ok=True)
+        self.error_dir.mkdir(exist_ok=True)
+
+        # Create error log
+        self.log_file = self.run_dir / "error.log"
+
+        total = len(self.selected_files)
+        completed = 0
+        failed = 0
+
+        for i, filepath in enumerate(self.selected_files, 1):
+            self.progress_var.set(f"Processing {i}/{total}: {filepath.name}")
+
+            try:
+                self._process_single_file(filepath)
+                completed += 1
+
+                # Move to complete directory
+                try:
+                    dest = self.complete_dir / filepath.name
+                    if dest.exists():
+                        dest = self.complete_dir / f"{filepath.stem}_{timestamp}{filepath.suffix}"
+                    shutil.move(str(filepath), str(dest))
+                    self._update_list_item(i - 1, f"[OK] {filepath.name}")
+                except Exception as move_err:
+                    self._log_error(filepath.name, f"Move error: {move_err}")
+
+            except Exception as e:
+                failed += 1
+                error_msg = f"{type(e).__name__}: {e}"
+                self._log_error(filepath.name, error_msg)
+                self._log_error(filepath.name, traceback.format_exc())
+
+                # Move to error directory
+                try:
+                    dest = self.error_dir / filepath.name
+                    if dest.exists():
+                        dest = self.error_dir / f"{filepath.stem}_{timestamp}{filepath.suffix}"
+                    shutil.move(str(filepath), str(dest))
+                    self._update_list_item(i - 1, f"[ERROR] {filepath.name}")
+                except Exception as move_err:
+                    self._log_error(filepath.name, f"Move error: {move_err}")
+
+                # Continue to next file (don't stop on error)
+                continue
+
+        # Done
+        self.progress_var.set("")
+        self.status.set(
+            f"Batch complete: {completed} succeeded, {failed} failed. "
+            f"Results in: {self.run_dir.name}"
+        )
+        self.btn_select.config(state="normal")
+        self.btn_open.config(state="normal")
+
+    def _process_single_file(self, filepath):
+        """Process a single file."""
+        # Copy file to input dir if not already there
+        if filepath.parent != INPUT_DIR:
+            dest = INPUT_DIR / filepath.name
+            shutil.copy2(filepath, dest)
+            work_file = dest
+        else:
+            work_file = filepath
+
+        # Parse file
+        dataset = parse_file(work_file)
+
+        # Compute chaos metrics
+        chaos_results = compute_chaos_metrics(dataset)
+
+        # Create subdirectory for this dataset
+        dataset_dir = self.run_dir / dataset["dataset_name"]
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        (dataset_dir / "figures").mkdir(exist_ok=True)
+
+        # Save results
+        save_results(dataset_dir, dataset, chaos_results)
+        generate_plot(dataset_dir, chaos_results, dataset["dataset_name"])
+        generate_html_report(dataset_dir, dataset, chaos_results)
+
+    def _log_error(self, filename, message):
+        """Append error to log file."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] {filename}\n{message}\n\n")
+
+    def _update_list_item(self, index, text):
+        """Update listbox item (thread-safe via root.after)."""
+        def update():
+            self.file_list.delete(index)
+            self.file_list.insert(index, text)
+        self.root.after(0, update)
+
+    def open_results(self):
+        """Open results directory or index.html in browser."""
+        if self.run_dir and self.run_dir.exists():
+            # Try to find an index.html in any subdirectory
+            for subdir in self.run_dir.iterdir():
+                if subdir.is_dir():
+                    index_file = subdir / "index.html"
+                    if index_file.exists():
+                        webbrowser.open(index_file.as_uri())
+                        return
+
+            # Fallback: open the directory
+            webbrowser.open(self.run_dir.as_uri())
+
+
+def main():
+    root = Tk()
+    MK4BatchApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
