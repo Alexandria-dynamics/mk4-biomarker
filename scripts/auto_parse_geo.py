@@ -735,12 +735,13 @@ def interpret_results(results):
 # ==============================================================
 
 def generate_output(output_dir, dataset, results):
-    """Generate output files (JSON + plot + HTML)."""
+    """Generate output files (JSON + plots + HTML with per-sample details)."""
     import base64
     from io import BytesIO
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "figures").mkdir(exist_ok=True)
 
     # Save JSON
     output_data = {
@@ -757,48 +758,166 @@ def generate_output(output_dir, dataset, results):
         encoding="utf-8"
     )
 
-    # Generate plot
+    # Get sample details
+    sample_details = results.get("sample_details", {})
     c = results.get("control_entropy", [])
     d = results.get("disease_entropy", [])
 
+    # ===== PLOT 1: Main boxplot =====
     fig, ax = plt.subplots(figsize=(10, 6))
-
     if c and d:
         bp = ax.boxplot([c, d], labels=["Control", "Disease"], patch_artist=True)
         bp["boxes"][0].set_facecolor("#2ecc71")
         bp["boxes"][1].set_facecolor("#e74c3c")
         for box in bp["boxes"]:
             box.set_alpha(0.7)
-
     ax.set_ylabel("Shannon Entropy", fontsize=12)
     ax.set_title(f"Chaos Analysis: {dataset['dataset_name']}", fontsize=14, fontweight="bold")
     ax.grid(axis="y", alpha=0.3)
-
     if "p_value" in results:
         p = results["p_value"]
         sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
         direction = results.get("direction", "")
-        ax.text(0.5, 0.95, f"{direction} | p = {p:.4f} {sig}",
-                transform=ax.transAxes, ha="center", fontsize=11)
-
-    # Save plot
-    (output_dir / "figures").mkdir(exist_ok=True)
-    plt.savefig(output_dir / "figures" / "chaos_boxplot.png", dpi=150, bbox_inches="tight")
-
-    # Also save as base64 for HTML
+        ax.text(0.5, 0.95, f"{direction} | p = {p:.4f} {sig}", transform=ax.transAxes, ha="center", fontsize=11)
+    plt.savefig(output_dir / "figures" / "boxplot.png", dpi=150, bbox_inches="tight")
     buf = BytesIO()
     plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
     plt.close()
     buf.seek(0)
-    plot_b64 = base64.b64encode(buf.read()).decode("utf-8")
+    boxplot_b64 = base64.b64encode(buf.read()).decode("utf-8")
 
-    # Generate HTML report
+    # ===== PLOT 2: Per-sample bar chart =====
+    if sample_details:
+        # Sort samples by label then by entropy
+        sorted_samples = sorted(sample_details.items(),
+                                key=lambda x: (x[1].get('label', ''), x[1].get('entropy', 0)))
+
+        sample_ids = [s[0] for s in sorted_samples]
+        entropies = [s[1].get('entropy', 0) for s in sorted_samples]
+        colors = ['#2ecc71' if s[1].get('label') == 'CONTROL' else '#e74c3c' for s in sorted_samples]
+
+        fig, ax = plt.subplots(figsize=(max(10, len(sample_ids) * 0.5), 6))
+        bars = ax.bar(range(len(sample_ids)), entropies, color=colors, alpha=0.7)
+        ax.set_xticks(range(len(sample_ids)))
+        ax.set_xticklabels(sample_ids, rotation=45, ha='right', fontsize=8)
+        ax.set_ylabel("Shannon Entropy", fontsize=12)
+        ax.set_title("Entropy per Sample", fontsize=14, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
+
+        # Add legend
+        from matplotlib.patches import Patch
+        legend_elements = [Patch(facecolor='#2ecc71', alpha=0.7, label='Control'),
+                          Patch(facecolor='#e74c3c', alpha=0.7, label='Disease')]
+        ax.legend(handles=legend_elements, loc='upper right')
+
+        plt.tight_layout()
+        plt.savefig(output_dir / "figures" / "samples_bar.png", dpi=150, bbox_inches="tight")
+        buf = BytesIO()
+        plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close()
+        buf.seek(0)
+        samples_bar_b64 = base64.b64encode(buf.read()).decode("utf-8")
+    else:
+        samples_bar_b64 = ""
+
+    # ===== Build sample cards HTML =====
+    sample_cards_html = ""
+    if sample_details:
+        # Calculate min/max for visual bar
+        all_ent = [s.get('entropy', 0) for s in sample_details.values() if s.get('entropy')]
+        min_ent = min(all_ent) if all_ent else 0
+        max_ent = max(all_ent) if all_ent else 1
+        range_ent = max_ent - min_ent if max_ent != min_ent else 1
+
+        for sample_id, details in sorted(sample_details.items(), key=lambda x: x[1].get('label', '')):
+            label = details.get('label', 'Unknown')
+            entropy_val = details.get('entropy', 0)
+            n_genes = details.get('n_genes', 0)
+
+            # Color and style based on label
+            if label == 'CONTROL':
+                border_color = '#2ecc71'
+                label_bg = '#d4edda'
+                label_color = '#155724'
+            elif label == 'DISEASE':
+                border_color = '#e74c3c'
+                label_bg = '#f8d7da'
+                label_color = '#721c24'
+            else:
+                border_color = '#6c757d'
+                label_bg = '#e9ecef'
+                label_color = '#495057'
+
+            # Visual bar width (0-100%)
+            bar_width = ((entropy_val - min_ent) / range_ent) * 100 if entropy_val else 0
+
+            sample_cards_html += f"""
+            <div class="sample-card" style="border-left: 4px solid {border_color};">
+                <div class="sample-header">
+                    <span class="sample-id">{sample_id}</span>
+                    <span class="sample-label" style="background: {label_bg}; color: {label_color};">{label}</span>
+                </div>
+                <div class="sample-entropy">
+                    <span class="entropy-value">{entropy_val:.6f}</span>
+                    <span class="entropy-label">Shannon Entropy</span>
+                </div>
+                <div class="entropy-bar-container">
+                    <div class="entropy-bar" style="width: {bar_width}%; background: {border_color};"></div>
+                </div>
+                <div class="sample-meta">Genes: {n_genes:,}</div>
+            </div>
+            """
+
+    # ===== Build data table HTML =====
+    data_table_html = """
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Sample ID</th>
+                <th>Group</th>
+                <th>Entropy</th>
+                <th>Genes</th>
+                <th>Visual</th>
+            </tr>
+        </thead>
+        <tbody>
+    """
+
+    if sample_details:
+        for sample_id, details in sorted(sample_details.items(), key=lambda x: (x[1].get('label', ''), -x[1].get('entropy', 0))):
+            label = details.get('label', 'Unknown')
+            entropy_val = details.get('entropy', 0)
+            n_genes = details.get('n_genes', 0)
+
+            label_class = 'control' if label == 'CONTROL' else 'disease' if label == 'DISEASE' else ''
+            bar_width = ((entropy_val - min_ent) / range_ent) * 100 if entropy_val else 0
+            bar_color = '#2ecc71' if label == 'CONTROL' else '#e74c3c'
+
+            data_table_html += f"""
+            <tr>
+                <td><strong>{sample_id}</strong></td>
+                <td><span class="label-badge {label_class}">{label}</span></td>
+                <td>{entropy_val:.6f}</td>
+                <td>{n_genes:,}</td>
+                <td>
+                    <div class="mini-bar-container">
+                        <div class="mini-bar" style="width: {bar_width}%; background: {bar_color};"></div>
+                    </div>
+                </td>
+            </tr>
+            """
+
+    data_table_html += """
+        </tbody>
+    </table>
+    """
+
+    # ===== Generate HTML =====
     sig_class = "sig-yes" if results.get("significant") else "sig-no"
     sig_text = "Significant ✓" if results.get("significant") else "Not Significant"
 
-    # Pre-compute formatted values for HTML
     p_val = results.get('p_value')
-    p_value_str = f"{p_val:.4f}" if isinstance(p_val, float) else "N/A"
+    p_value_str = f"{p_val:.6f}" if isinstance(p_val, float) else "N/A"
     ctrl_mean = results.get('control_mean', 0)
     ctrl_std = results.get('control_std', 0)
     dis_mean = results.get('disease_mean', 0)
@@ -811,10 +930,13 @@ def generate_output(output_dir, dataset, results):
     <meta charset="UTF-8">
     <title>MK4 Report - {dataset['dataset_name']}</title>
     <style>
+        * {{ box-sizing: border-box; }}
         body {{ font-family: -apple-system, Arial, sans-serif; margin: 0; background: #f5f7fa; }}
         .header {{ background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 30px; text-align: center; }}
-        .container {{ max-width: 1000px; margin: 20px auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        .container {{ max-width: 1200px; margin: 20px auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
         h1 {{ margin: 0; font-size: 2em; }}
+        h2 {{ color: #667eea; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px; margin-top: 40px; }}
+
         .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }}
         .stat-card {{ padding: 20px; border-radius: 8px; background: #f8f9fa; border-left: 4px solid #667eea; }}
         .stat-card.control {{ border-color: #2ecc71; }}
@@ -822,40 +944,67 @@ def generate_output(output_dir, dataset, results):
         .stat-card.result {{ border-color: #f39c12; }}
         .stat-value {{ font-size: 1.8em; font-weight: bold; color: #333; }}
         .stat-label {{ color: #666; font-size: 0.9em; margin-top: 5px; }}
-        img {{ max-width: 100%; margin: 20px 0; border-radius: 8px; }}
+
+        img {{ max-width: 100%; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+
         .sig-yes {{ background: #d4edda; color: #155724; padding: 5px 15px; border-radius: 20px; display: inline-block; }}
         .sig-no {{ background: #f8d7da; color: #721c24; padding: 5px 15px; border-radius: 20px; display: inline-block; }}
+
         .interpretation {{ background: #e8f4f8; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        pre {{ background: #272822; color: #f8f8f2; padding: 15px; border-radius: 8px; overflow-x: auto; }}
-        details {{ margin: 20px 0; }}
-        summary {{ cursor: pointer; font-weight: bold; color: #667eea; }}
+
+        /* Sample cards */
+        .samples-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; margin: 20px 0; }}
+        .sample-card {{ background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; }}
+        .sample-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }}
+        .sample-id {{ font-weight: bold; font-size: 1.1em; color: #333; }}
+        .sample-label {{ padding: 3px 10px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }}
+        .sample-entropy {{ margin: 10px 0; }}
+        .entropy-value {{ font-size: 1.5em; font-weight: bold; color: #667eea; }}
+        .entropy-label {{ display: block; font-size: 0.8em; color: #888; }}
+        .entropy-bar-container {{ height: 8px; background: #e9ecef; border-radius: 4px; overflow: hidden; }}
+        .entropy-bar {{ height: 100%; border-radius: 4px; transition: width 0.3s; }}
+        .sample-meta {{ font-size: 0.85em; color: #888; margin-top: 8px; }}
+
+        /* Data table */
+        .data-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+        .data-table th {{ background: #667eea; color: white; padding: 12px; text-align: left; }}
+        .data-table td {{ padding: 10px 12px; border-bottom: 1px solid #e0e0e0; }}
+        .data-table tr:hover {{ background: #f8f9fa; }}
+        .label-badge {{ padding: 3px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }}
+        .label-badge.control {{ background: #d4edda; color: #155724; }}
+        .label-badge.disease {{ background: #f8d7da; color: #721c24; }}
+        .mini-bar-container {{ width: 100px; height: 10px; background: #e9ecef; border-radius: 5px; overflow: hidden; }}
+        .mini-bar {{ height: 100%; border-radius: 5px; }}
+
+        .footer {{ text-align: center; color: #888; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0; }}
     </style>
 </head>
 <body>
     <div class="header">
         <h1>MK4 Biomarker Analysis</h1>
-        <p>Dataset: {dataset['dataset_name']} | Format: {dataset.get('format', 'Unknown')}</p>
+        <p>Dataset: {dataset['dataset_name']} | Format: {dataset.get('format', 'Unknown')} | Samples: {len(sample_details)}</p>
     </div>
 
     <div class="container">
+        <h2>📊 Summary Statistics</h2>
         <div class="stats">
             <div class="stat-card control">
                 <div class="stat-value">{results.get('n_control', 0)}</div>
                 <div class="stat-label">Control Samples</div>
                 <div style="margin-top: 10px; font-size: 0.9em;">
-                    {ctrl_mean:.6f} ± {ctrl_std:.6f}
+                    Mean: {ctrl_mean:.6f}<br>Std: ±{ctrl_std:.6f}
                 </div>
             </div>
             <div class="stat-card disease">
                 <div class="stat-value">{results.get('n_disease', 0)}</div>
                 <div class="stat-label">Disease Samples</div>
                 <div style="margin-top: 10px; font-size: 0.9em;">
-                    {dis_mean:.6f} ± {dis_std:.6f}
+                    Mean: {dis_mean:.6f}<br>Std: ±{dis_std:.6f}
                 </div>
             </div>
             <div class="stat-card result">
                 <div class="stat-value">{p_value_str}</div>
-                <div class="stat-label">p-value</div>
+                <div class="stat-label">p-value (t-test)</div>
                 <div style="margin-top: 10px;">
                     <span class="{sig_class}">{sig_text}</span>
                 </div>
@@ -864,33 +1013,40 @@ def generate_output(output_dir, dataset, results):
                 <div class="stat-value">{results.get('direction', 'N/A')}</div>
                 <div class="stat-label">Direction</div>
                 <div style="margin-top: 10px; font-size: 0.9em;">
-                    {pct_change:+.2f}% change
+                    Change: {pct_change:+.2f}%
                 </div>
             </div>
         </div>
 
-        <h2>Visualization</h2>
-        <img src="data:image/png;base64,{plot_b64}" alt="Chaos Distribution">
-
         <div class="interpretation">
             <h3>💡 Interpretation</h3>
             <p>
-                {"Disease shows <strong>INCREASED</strong> transcriptional chaos, consistent with metabolic disorders, cancer, or inflammation."
+                {"Disease group shows <strong>INCREASED</strong> transcriptional chaos compared to controls. This pattern is consistent with metabolic disorders, cancer, or inflammatory conditions where cellular regulation is disrupted."
                  if results.get('direction') == 'INCREASE' and results.get('significant') else
-                 "Disease shows <strong>DECREASED</strong> transcriptional chaos, consistent with neurodegeneration or protein-level pathology."
+                 "Disease group shows <strong>DECREASED</strong> transcriptional chaos compared to controls. This pattern is consistent with neurodegenerative conditions or protein-level pathologies."
                  if results.get('direction') == 'DECREASE' and results.get('significant') else
-                 "No significant difference detected. This could indicate insufficient samples or disease acting at protein level."}
+                 "No statistically significant difference in transcriptional chaos between groups. This could indicate insufficient sample size, high variability, or that the disease mechanism operates at the protein level rather than transcriptional level."}
             </p>
         </div>
 
-        <details>
-            <summary>View Raw Data (JSON)</summary>
-            <pre>{json.dumps(output_data, indent=2, default=str)}</pre>
-        </details>
+        <h2>📈 Group Comparison</h2>
+        <img src="data:image/png;base64,{boxplot_b64}" alt="Boxplot Comparison">
 
-        <p style="text-align: center; color: #888; margin-top: 30px;">
-            MK4 Biomarker Analysis Engine | Alexandria Dynamics | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        </p>
+        <h2>📊 Per-Sample Entropy</h2>
+        {"<img src='data:image/png;base64," + samples_bar_b64 + "' alt='Per-sample entropy'>" if samples_bar_b64 else "<p>No sample data available</p>"}
+
+        <h2>🧬 Individual Sample Details</h2>
+        <div class="samples-grid">
+            {sample_cards_html}
+        </div>
+
+        <h2>📋 Data Table</h2>
+        {data_table_html}
+
+        <div class="footer">
+            <p><strong>MK4 Biomarker Analysis Engine</strong></p>
+            <p>Alexandria Dynamics | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        </div>
     </div>
 </body>
 </html>"""
