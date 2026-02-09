@@ -306,39 +306,34 @@ class MK4BatchApp:
             else:
                 work_files.append(filepath)
 
-        # Call auto_analyze with all files in the group
-        result = auto_analyze(work_files)
+        # Process each file INDIVIDUALLY - one file = one output
+        for work_file in work_files:
+            result = auto_analyze([work_file])
 
-        # Check for errors
-        if "error" in result:
-            raise ValueError(result["error"])
+            # Check for critical errors only
+            if "error" in result and "No valid" in result.get("error", ""):
+                raise ValueError(result["error"])
 
-        dataset = result.get("dataset", {})
-        analysis = result.get("results", {})
+            dataset = result.get("dataset", {})
+            analysis = result.get("results", {})
 
-        # Check if we have expression data
-        samples = dataset.get("samples", {})
-        n_with_expr = sum(1 for s in samples.values() if s.get("expression"))
-        if n_with_expr == 0:
-            file_names = ", ".join(f.name for f in files)
-            raise ValueError(f"No expression data found in: {file_names}")
+            # Metadata-only reports are OK, not an error
+            if analysis.get("metadata_only"):
+                print(f"   📋 Metadata-only report created for {work_file.name}")
 
-        if "error" in analysis and analysis.get("n_control", 0) == 0:
-            raise ValueError(f"No labeled samples found")
+            # Move output to our batch directory structure
+            output_dir_str = result.get("output_dir", "")
+            if output_dir_str and output_dir_str != ".":
+                auto_output = Path(output_dir_str)
+                if auto_output.exists() and auto_output.is_dir() and auto_output != Path("."):
+                    # Move contents to our batch subdirectory
+                    dataset_name = dataset.get("dataset_name", work_file.stem)
+                    dataset_dir = self.run_dir / dataset_name
 
-        # Move output to our batch directory structure
-        output_dir_str = result.get("output_dir", "")
-        if output_dir_str and output_dir_str != ".":
-            auto_output = Path(output_dir_str)
-            if auto_output.exists() and auto_output.is_dir() and auto_output != Path("."):
-                # Move contents to our batch subdirectory
-                dataset_name = dataset.get("dataset_name", files[0].stem)
-                dataset_dir = self.run_dir / dataset_name
+                    if dataset_dir.exists():
+                        shutil.rmtree(dataset_dir)
 
-                if dataset_dir.exists():
-                    shutil.rmtree(dataset_dir)
-
-                shutil.move(str(auto_output), str(dataset_dir))
+                    shutil.move(str(auto_output), str(dataset_dir))
 
     def _log_error(self, filename, message):
         """Append error to log file."""

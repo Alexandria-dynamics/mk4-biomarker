@@ -734,6 +734,167 @@ def interpret_results(results):
 # OUTPUT
 # ==============================================================
 
+def generate_metadata_report(output_dir, dataset):
+    """Generate metadata-only HTML report (no expression data, no chaos analysis)."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    samples = dataset.get("samples", {})
+    n_control = sum(1 for s in samples.values() if s.get("label") == "CONTROL")
+    n_disease = sum(1 for s in samples.values() if s.get("label") == "DISEASE")
+    n_unknown = len(samples) - n_control - n_disease
+
+    # Build sample table HTML
+    sample_rows = ""
+    for sample_id, details in sorted(samples.items(), key=lambda x: x[1].get('label') or ''):
+        label = details.get('label') or 'Unknown'
+        title = details.get('title', '')
+        source = details.get('source', '')
+
+        if label == 'CONTROL':
+            label_class = 'control'
+        elif label == 'DISEASE':
+            label_class = 'disease'
+        else:
+            label_class = ''
+
+        # Get all metadata fields
+        meta_items = []
+        for key, val in details.items():
+            if key not in ['label', 'expression', 'title', 'source'] and val:
+                meta_items.append(f"<strong>{key}:</strong> {val}")
+        meta_html = "<br>".join(meta_items[:5]) if meta_items else "-"
+
+        sample_rows += f"""
+        <tr>
+            <td><strong>{sample_id}</strong></td>
+            <td><span class="label-badge {label_class}">{label}</span></td>
+            <td>{title}</td>
+            <td>{source}</td>
+            <td style="font-size: 11px;">{meta_html}</td>
+        </tr>
+        """
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metadata Report - {dataset.get('dataset_name', 'Unknown')}</title>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               background: #f5f5f5; color: #333; line-height: 1.6; padding: 20px; }}
+        .container {{ max-width: 1200px; margin: 0 auto; }}
+        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                  color: white; padding: 30px; border-radius: 12px; margin-bottom: 20px; }}
+        .header h1 {{ font-size: 1.8rem; margin-bottom: 10px; }}
+        .header .subtitle {{ opacity: 0.9; font-size: 0.95rem; }}
+        .card {{ background: white; border-radius: 12px; padding: 25px;
+                margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }}
+        .card h2 {{ font-size: 1.3rem; margin-bottom: 15px; color: #444; }}
+        .warning-box {{ background: #fff3cd; border: 1px solid #ffc107;
+                       border-radius: 8px; padding: 15px; margin-bottom: 20px; }}
+        .warning-box h3 {{ color: #856404; margin-bottom: 8px; }}
+        .warning-box p {{ color: #856404; }}
+        .stats {{ display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }}
+        .stat {{ background: #f8f9fa; padding: 15px 25px; border-radius: 8px; text-align: center; }}
+        .stat .value {{ font-size: 2rem; font-weight: bold; color: #333; }}
+        .stat .label {{ font-size: 0.85rem; color: #666; }}
+        .stat.control .value {{ color: #2ecc71; }}
+        .stat.disease .value {{ color: #e74c3c; }}
+        table {{ width: 100%; border-collapse: collapse; }}
+        th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #eee; }}
+        th {{ background: #f8f9fa; font-weight: 600; color: #555; }}
+        .label-badge {{ padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 500; }}
+        .label-badge.control {{ background: #d4edda; color: #155724; }}
+        .label-badge.disease {{ background: #f8d7da; color: #721c24; }}
+        .footer {{ text-align: center; padding: 20px; color: #888; font-size: 0.85rem; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📋 Metadata Report</h1>
+            <div class="subtitle">{dataset.get('dataset_name', 'Unknown Dataset')}</div>
+            <div class="subtitle">Source: {dataset.get('source_file', 'N/A')}</div>
+        </div>
+
+        <div class="warning-box">
+            <h3>⚠️ Metadata Only - No Expression Data</h3>
+            <p>This SOFT file contains sample metadata but no embedded expression data.</p>
+            <p>Chaos (Shannon entropy) analysis cannot be performed without expression values.</p>
+            <p>To perform chaos analysis, you need the Series Matrix file with expression data.</p>
+        </div>
+
+        <div class="card">
+            <h2>Sample Summary</h2>
+            <div class="stats">
+                <div class="stat">
+                    <div class="value">{len(samples)}</div>
+                    <div class="label">Total Samples</div>
+                </div>
+                <div class="stat control">
+                    <div class="value">{n_control}</div>
+                    <div class="label">Control</div>
+                </div>
+                <div class="stat disease">
+                    <div class="value">{n_disease}</div>
+                    <div class="label">Disease</div>
+                </div>
+                <div class="stat">
+                    <div class="value">{n_unknown}</div>
+                    <div class="label">Unlabeled</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Sample Details</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Sample ID</th>
+                        <th>Label</th>
+                        <th>Title</th>
+                        <th>Source</th>
+                        <th>Metadata</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {sample_rows}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="footer">
+            <p>Generated by MK4 Biomarker - Alexandria Dynamics</p>
+            <p>This is a metadata-only report. For chaos analysis, expression data is required.</p>
+        </div>
+    </div>
+</body>
+</html>"""
+
+    # Write HTML
+    with open(output_dir / "index.html", "w", encoding="utf-8") as f:
+        f.write(html)
+
+    # Write JSON with metadata
+    import json
+    meta_json = {
+        "dataset_name": dataset.get("dataset_name"),
+        "source_file": dataset.get("source_file"),
+        "metadata_only": True,
+        "total_samples": len(samples),
+        "n_control": n_control,
+        "n_disease": n_disease,
+        "samples": {sid: {k: v for k, v in s.items() if k != "expression"}
+                   for sid, s in samples.items()}
+    }
+    with open(output_dir / "metadata.json", "w", encoding="utf-8") as f:
+        json.dump(meta_json, f, indent=2)
+
+
 def generate_output(output_dir, dataset, results):
     """Generate output files (JSON + plots + HTML with per-sample details)."""
     import base64
@@ -1095,58 +1256,26 @@ def auto_analyze(filepaths):
         else:
             print(f"   ⚠️ Unknown format, skipping")
 
-    # Parse based on what we have
+    # Parse based on what we have - ONE file = ONE output, NO combining
     dataset = None
+    metadata_only = False
 
     if soft_file and has_expression_tables(soft_file):
         # SOFT with embedded expression - use directly
         print(f"\n✅ Using SOFT file with embedded expression tables")
         dataset = parse_soft_file(soft_file)
 
-    elif soft_file and matrix_file:
-        # SOFT metadata + Matrix data - combine them
-        print(f"\n✅ Combining SOFT metadata with Matrix data")
-        soft_data = parse_soft_file(soft_file)
-        dataset = parse_matrix_file(matrix_file, soft_metadata=soft_data)
-        dataset["combined_from"] = [soft_file.name, matrix_file.name]
+    elif soft_file:
+        # SOFT without expression - create metadata-only report
+        print(f"\n⚠️ SOFT file without expression tables")
+        print(f"   Creating metadata-only report (no chaos analysis)")
+        dataset = parse_soft_file(soft_file)
+        metadata_only = True
 
     elif matrix_file:
-        # Matrix only - try to infer labels from column names
-        print(f"\n✅ Using Matrix file (inferring labels)")
+        # Matrix file - parse and analyze
+        print(f"\n✅ Using Matrix file")
         dataset = parse_matrix_file(matrix_file)
-
-    elif soft_file:
-        # SOFT without expression - try to find Matrix file in same directory
-        print(f"\n⚠️ SOFT file without expression tables")
-        print(f"   Searching for Matrix file in same directory...")
-
-        # Extract GSE ID from filename
-        gse_match = re.search(r'(GSE\d+)', soft_file.name, re.IGNORECASE)
-        gse_id = gse_match.group(1).upper() if gse_match else None
-
-        # Search for matrix file in same directory
-        found_matrix = None
-        if gse_id:
-            parent_dir = soft_file.parent
-            for pattern in [f"*{gse_id}*matrix*.txt.gz", f"*{gse_id}*series*.txt.gz",
-                           f"*{gse_id}*.txt.gz", "*matrix*.txt.gz", "*series*.txt.gz"]:
-                matches = list(parent_dir.glob(pattern))
-                for m in matches:
-                    if detect_file_format(m) == "MATRIX":
-                        found_matrix = m
-                        break
-                if found_matrix:
-                    break
-
-        if found_matrix:
-            print(f"   ✅ Found Matrix file: {found_matrix.name}")
-            soft_data = parse_soft_file(soft_file)
-            dataset = parse_matrix_file(found_matrix, soft_metadata=soft_data)
-            dataset["combined_from"] = [soft_file.name, found_matrix.name]
-        else:
-            print(f"   ❌ No Matrix file found")
-            print(f"   Download the Series Matrix file for this dataset from GEO")
-            dataset = parse_soft_file(soft_file)
 
     else:
         print(f"\n❌ No valid files found")
@@ -1165,10 +1294,25 @@ def auto_analyze(filepaths):
     print(f"   Labeled DISEASE: {n_disease}")
     print(f"   Unlabeled: {len(samples) - n_control - n_disease}")
 
-    # Analyze
-    if n_with_expr == 0:
-        print(f"\n❌ No expression data found")
-        return {"error": "No expression data found", "dataset": dataset}
+    # Handle metadata-only case
+    if metadata_only or n_with_expr == 0:
+        print(f"\n📋 METADATA-ONLY REPORT")
+        print(f"   No expression data - cannot compute chaos metrics")
+        print(f"   Report will contain sample metadata only")
+
+        # Generate metadata-only output
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = RESULTS_DIR / f"{timestamp}_{dataset['dataset_name']}"
+        generate_metadata_report(output_dir, dataset)
+
+        print(f"\n✅ Output saved to: {output_dir.relative_to(PROJECT_ROOT)}")
+        print("=" * 70 + "\n")
+
+        return {
+            "dataset": dataset,
+            "results": {"metadata_only": True},
+            "output_dir": str(output_dir)
+        }
 
     if n_control == 0 or n_disease == 0:
         print(f"\n⚠️ Missing control or disease samples")
