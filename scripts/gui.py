@@ -272,11 +272,18 @@ class MK4BatchApp:
         # Use auto-analyze (handles all formats automatically)
         result = auto_analyze(work_file)
 
-        if "error" in result and "dataset" not in result:
+        # Check for errors
+        if "error" in result:
             raise ValueError(result["error"])
 
         dataset = result.get("dataset", {})
         analysis = result.get("results", {})
+
+        # Check if we have expression data
+        samples = dataset.get("samples", {})
+        n_with_expr = sum(1 for s in samples.values() if s.get("expression"))
+        if n_with_expr == 0:
+            raise ValueError(f"No expression data in {filepath.name}. Need matrix file with expression values.")
 
         if "error" in analysis and analysis.get("n_control", 0) == 0:
             raise ValueError(f"No labeled samples found in {filepath.name}")
