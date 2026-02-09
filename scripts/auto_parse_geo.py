@@ -1116,10 +1116,37 @@ def auto_analyze(filepaths):
         dataset = parse_matrix_file(matrix_file)
 
     elif soft_file:
-        # SOFT without expression - can only get metadata
+        # SOFT without expression - try to find Matrix file in same directory
         print(f"\n⚠️ SOFT file without expression tables")
-        print(f"   Need matching Matrix file for expression data")
-        dataset = parse_soft_file(soft_file)
+        print(f"   Searching for Matrix file in same directory...")
+
+        # Extract GSE ID from filename
+        gse_match = re.search(r'(GSE\d+)', soft_file.name, re.IGNORECASE)
+        gse_id = gse_match.group(1).upper() if gse_match else None
+
+        # Search for matrix file in same directory
+        found_matrix = None
+        if gse_id:
+            parent_dir = soft_file.parent
+            for pattern in [f"*{gse_id}*matrix*.txt.gz", f"*{gse_id}*series*.txt.gz",
+                           f"*{gse_id}*.txt.gz", "*matrix*.txt.gz", "*series*.txt.gz"]:
+                matches = list(parent_dir.glob(pattern))
+                for m in matches:
+                    if detect_file_format(m) == "MATRIX":
+                        found_matrix = m
+                        break
+                if found_matrix:
+                    break
+
+        if found_matrix:
+            print(f"   ✅ Found Matrix file: {found_matrix.name}")
+            soft_data = parse_soft_file(soft_file)
+            dataset = parse_matrix_file(found_matrix, soft_metadata=soft_data)
+            dataset["combined_from"] = [soft_file.name, found_matrix.name]
+        else:
+            print(f"   ❌ No Matrix file found")
+            print(f"   Download the Series Matrix file for this dataset from GEO")
+            dataset = parse_soft_file(soft_file)
 
     else:
         print(f"\n❌ No valid files found")
