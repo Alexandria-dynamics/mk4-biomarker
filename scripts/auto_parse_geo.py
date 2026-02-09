@@ -788,12 +788,12 @@ def generate_output(output_dir, dataset, results):
 
     # ===== PLOT 2: Per-sample bar chart =====
     if sample_details:
-        # Sort samples by label then by entropy
+        # Sort samples by label then by entropy (handle None values)
         sorted_samples = sorted(sample_details.items(),
-                                key=lambda x: (x[1].get('label', ''), x[1].get('entropy', 0)))
+                                key=lambda x: (x[1].get('label') or '', x[1].get('entropy') or 0))
 
         sample_ids = [s[0] for s in sorted_samples]
-        entropies = [s[1].get('entropy', 0) for s in sorted_samples]
+        entropies = [s[1].get('entropy') or 0 for s in sorted_samples]
         colors = ['#2ecc71' if s[1].get('label') == 'CONTROL' else '#e74c3c' for s in sorted_samples]
 
         fig, ax = plt.subplots(figsize=(max(10, len(sample_ids) * 0.5), 6))
@@ -829,10 +829,10 @@ def generate_output(output_dir, dataset, results):
         max_ent = max(all_ent) if all_ent else 1
         range_ent = max_ent - min_ent if max_ent != min_ent else 1
 
-        for sample_id, details in sorted(sample_details.items(), key=lambda x: x[1].get('label', '')):
-            label = details.get('label', 'Unknown')
-            entropy_val = details.get('entropy', 0)
-            n_genes = details.get('n_genes', 0)
+        for sample_id, details in sorted(sample_details.items(), key=lambda x: x[1].get('label') or ''):
+            label = details.get('label') or 'Unknown'
+            entropy_val = details.get('entropy') or 0
+            n_genes = details.get('n_genes') or 0
 
             # Color and style based on label
             if label == 'CONTROL':
@@ -884,10 +884,10 @@ def generate_output(output_dir, dataset, results):
     """
 
     if sample_details:
-        for sample_id, details in sorted(sample_details.items(), key=lambda x: (x[1].get('label', ''), -x[1].get('entropy', 0))):
-            label = details.get('label', 'Unknown')
-            entropy_val = details.get('entropy', 0)
-            n_genes = details.get('n_genes', 0)
+        for sample_id, details in sorted(sample_details.items(), key=lambda x: (x[1].get('label') or '', -(x[1].get('entropy') or 0))):
+            label = details.get('label') or 'Unknown'
+            entropy_val = details.get('entropy') or 0
+            n_genes = details.get('n_genes') or 0
 
             label_class = 'control' if label == 'CONTROL' else 'disease' if label == 'DISEASE' else ''
             bar_width = ((entropy_val - min_ent) / range_ent) * 100 if entropy_val else 0
