@@ -195,6 +195,7 @@ class MK4BatchApp:
 
     def _process_batch(self):
         """Process all selected files (runs in background thread)."""
+        import re
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Create main run directory
@@ -210,44 +211,74 @@ class MK4BatchApp:
         # Create error log
         self.log_file = self.run_dir / "error.log"
 
-        total = len(self.selected_files)
+        # Group files by GSE ID to combine SOFT + Matrix pairs
+        file_groups = {}
+        for filepath in self.selected_files:
+            # Extract GSE ID from filename
+            match = re.search(r'(GSE\d+)', filepath.name, re.IGNORECASE)
+            gse_id = match.group(1).upper() if match else filepath.stem
+
+            if gse_id not in file_groups:
+                file_groups[gse_id] = {"soft": None, "matrix": None, "files": []}
+
+            file_groups[gse_id]["files"].append(filepath)
+
+            # Detect file type
+            fmt = detect_file_format(filepath)
+            if fmt == "SOFT":
+                file_groups[gse_id]["soft"] = filepath
+            elif fmt == "MATRIX":
+                file_groups[gse_id]["matrix"] = filepath
+
+        total = len(file_groups)
         completed = 0
         failed = 0
+        file_idx = 0
 
-        for i, filepath in enumerate(self.selected_files, 1):
-            self.progress_var.set(f"Processing {i}/{total}: {filepath.name}")
+        for gse_id, group in file_groups.items():
+            files = group["files"]
+            self.progress_var.set(f"Processing {gse_id} ({len(files)} file(s))")
 
             try:
-                self._process_single_file(filepath)
+                # Process as a group (auto_analyze handles combining)
+                self._process_file_group(group)
                 completed += 1
 
-                # Move to complete directory
-                try:
-                    dest = self.complete_dir / filepath.name
-                    if dest.exists():
-                        dest = self.complete_dir / f"{filepath.stem}_{timestamp}{filepath.suffix}"
-                    shutil.move(str(filepath), str(dest))
-                    self._update_list_item(i - 1, f"[OK] {filepath.name}")
-                except Exception as move_err:
-                    self._log_error(filepath.name, f"Move error: {move_err}")
+                # Move all files in group to complete
+                for filepath in files:
+                    try:
+                        dest = self.complete_dir / filepath.name
+                        if dest.exists():
+                            dest = self.complete_dir / f"{filepath.stem}_{timestamp}{filepath.suffix}"
+                        shutil.move(str(filepath), str(dest))
+                    except Exception as move_err:
+                        self._log_error(filepath.name, f"Move error: {move_err}")
+
+                # Update list items
+                for filepath in files:
+                    idx = self.selected_files.index(filepath)
+                    self._update_list_item(idx, f"[OK] {filepath.name}")
 
             except Exception as e:
                 failed += 1
                 error_msg = f"{type(e).__name__}: {e}"
-                self._log_error(filepath.name, error_msg)
-                self._log_error(filepath.name, traceback.format_exc())
+                for filepath in files:
+                    self._log_error(filepath.name, error_msg)
+                self._log_error(gse_id, traceback.format_exc())
 
-                # Move to error directory
-                try:
-                    dest = self.error_dir / filepath.name
-                    if dest.exists():
-                        dest = self.error_dir / f"{filepath.stem}_{timestamp}{filepath.suffix}"
-                    shutil.move(str(filepath), str(dest))
-                    self._update_list_item(i - 1, f"[ERROR] {filepath.name}")
-                except Exception as move_err:
-                    self._log_error(filepath.name, f"Move error: {move_err}")
+                # Move all files in group to error
+                for filepath in files:
+                    try:
+                        dest = self.error_dir / filepath.name
+                        if dest.exists():
+                            dest = self.error_dir / f"{filepath.stem}_{timestamp}{filepath.suffix}"
+                        shutil.move(str(filepath), str(dest))
+                    except Exception as move_err:
+                        self._log_error(filepath.name, f"Move error: {move_err}")
 
-                # Continue to next file (don't stop on error)
+                    idx = self.selected_files.index(filepath)
+                    self._update_list_item(idx, f"[ERROR] {filepath.name}")
+
                 continue
 
         # Done
@@ -259,18 +290,24 @@ class MK4BatchApp:
         self.btn_select.config(state="normal")
         self.btn_open.config(state="normal")
 
-    def _process_single_file(self, filepath):
-        """Process a single file using universal auto-parser."""
-        # Copy file to input dir if not already there
-        if filepath.parent != INPUT_DIR:
-            dest = INPUT_DIR / filepath.name
-            shutil.copy2(filepath, dest)
-            work_file = dest
-        else:
-            work_file = filepath
+    def _process_file_group(self, group):
+        """Process a group of related files (SOFT + Matrix with same GSE ID)."""
+        files = group["files"]
+        soft_file = group.get("soft")
+        matrix_file = group.get("matrix")
 
-        # Use auto-analyze (handles all formats automatically)
-        result = auto_analyze(work_file)
+        # Copy files to input dir
+        work_files = []
+        for filepath in files:
+            if filepath.parent != INPUT_DIR:
+                dest = INPUT_DIR / filepath.name
+                shutil.copy2(filepath, dest)
+                work_files.append(dest)
+            else:
+                work_files.append(filepath)
+
+        # Call auto_analyze with all files in the group
+        result = auto_analyze(work_files)
 
         # Check for errors
         if "error" in result:
@@ -283,10 +320,11 @@ class MK4BatchApp:
         samples = dataset.get("samples", {})
         n_with_expr = sum(1 for s in samples.values() if s.get("expression"))
         if n_with_expr == 0:
-            raise ValueError(f"No expression data in {filepath.name}. Need matrix file with expression values.")
+            file_names = ", ".join(f.name for f in files)
+            raise ValueError(f"No expression data found in: {file_names}")
 
         if "error" in analysis and analysis.get("n_control", 0) == 0:
-            raise ValueError(f"No labeled samples found in {filepath.name}")
+            raise ValueError(f"No labeled samples found")
 
         # Move output to our batch directory structure
         output_dir_str = result.get("output_dir", "")
@@ -294,7 +332,7 @@ class MK4BatchApp:
             auto_output = Path(output_dir_str)
             if auto_output.exists() and auto_output.is_dir() and auto_output != Path("."):
                 # Move contents to our batch subdirectory
-                dataset_name = dataset.get("dataset_name", filepath.stem)
+                dataset_name = dataset.get("dataset_name", files[0].stem)
                 dataset_dir = self.run_dir / dataset_name
 
                 if dataset_dir.exists():

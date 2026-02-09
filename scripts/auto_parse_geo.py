@@ -532,7 +532,7 @@ def parse_matrix_file(filepath, soft_metadata=None):
 
         # Get expression values
         expr_series = pd.to_numeric(df[col_name], errors="coerce").dropna()
-        expression = dict(zip(df.index[expr_series.index], expr_series.values))
+        expression = dict(zip(expr_series.index, expr_series.values))
 
         if len(expression) > 0:
             samples[sample_id] = {
