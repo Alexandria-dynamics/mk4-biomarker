@@ -182,6 +182,21 @@ Full details: [docs/roadmap.md](docs/roadmap.md)
 - **v2.0** — Independent dataset validation
 - **v3.0** — Clinical feasibility assessment
 
+
+
+## EEG companion module (`mk4.eeg`)
+
+An EEG adaptation of the MK4 spectral biomarker pipeline is available under
+`src/mk4/eeg/`. It applies the same FFT + spectral entropy + orientation-vector
+methodology to multi-channel EEG time series across four public OpenNeuro
+datasets (Parkinson, MDD, Alzheimer+FTD, mild TBI).
+
+Statistical validation includes 5-fold cross-validation with strict no-data-leakage,
+1000-shuffle permutation testing, and 1000-resample bootstrap 95% confidence
+intervals.
+
+See [src/mk4/eeg/README.md](src/mk4/eeg/README.md) for quickstart.
+
 ## Data Sources
 
 All datasets are from NCBI Gene Expression Omnibus (GEO).

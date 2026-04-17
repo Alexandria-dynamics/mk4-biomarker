@@ -31,3 +31,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Results — allow EEG published stats + figures, exclude everything else
+!results/eeg/
+!results/eeg/*
